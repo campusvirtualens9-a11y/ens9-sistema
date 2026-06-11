@@ -50,6 +50,8 @@ interface ImportResult {
   file: string
   studentsImported: number
   studentsSkipped: number
+  teachersImported: number
+  assignmentsImported: number
   errors: string[]
   warnings: string[]
 }
@@ -58,6 +60,35 @@ interface StudentRow {
   ord: number
   dni: string
   fullName: string
+}
+
+interface TeacherAssignmentRow {
+  subjectName: string
+  teacherName: string
+  email: string
+}
+
+function extractTeacherAssignments(ws: XLSX.WorkSheet): TeacherAssignmentRow[] {
+  const data = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, defval: '' })
+  const assignments: TeacherAssignmentRow[] = []
+
+  for (const row of data) {
+    const subject = String(row[30] || '').trim()
+    const teacher = String(row[31] || '').trim()
+    const email = String(row[32] || '').trim()
+
+    const skipWords = new Set(['Materia', 'Profesor', 'División', 'Turno', 'Año', 'Curso'])
+    if (
+      subject.length > 2 &&
+      teacher.length > 2 &&
+      !skipWords.has(subject) &&
+      !skipWords.has(teacher)
+    ) {
+      assignments.push({ subjectName: subject, teacherName: teacher, email })
+    }
+  }
+
+  return assignments
 }
 
 function extractStudentsFromMatrix(ws: XLSX.WorkSheet): StudentRow[] {
@@ -95,6 +126,68 @@ function extractSubjectsFromFile(wb: XLSX.WorkBook): string[] {
   )
 }
 
+// Aliases para nombres abreviados en los Excel → nombre normalizado en DB
+const SUBJECT_ALIASES: Record<string, string> = {
+  // Formación General
+  'lengua': 'lengua y literatura',
+  'lengua iii': 'lengua y literatura iii',
+  'leng. y lit. iii': 'lengua y literatura iii',
+  'lengua ext. ingles': 'lengua extranjera ingles',
+  'lengua ext. ingles iii': 'lengua extranjera ingles',
+  'lengua extranjera ingles iii': 'ingles iii',
+  'etica': 'formacion etica y ciudadana',
+  'educ. fisica': 'educacion fisica',
+  'ed. fisica': 'educacion fisica',
+  'educ. fisica i': 'educacion fisica i',
+  'educ. fisica ii': 'educacion fisica ii',
+  'educ. fisica iii': 'educacion fisica iii',
+  'ed. artistica': 'educacion artistica',
+  'educ. artistica': 'educacion artistica',
+  'educ. para la salud': 'educacion para el trabajo',
+  // TIC
+  'tic i': 'tic i',
+  'tic ii': 'tic ii',
+  'tic iii': 'tic',
+  'tic': 'tic',
+  // Formación Científico Tecnológica
+  'introd. a la gestion org.': 'introduccion a la gestion organizacional',
+  'introd. a la practica com.': 'introduccion a la practica comercial',
+  'sist. inf. cont.': 'sistemas de informacion contable',
+  'sist. inf. contable': 'sistemas de informacion contable ii',
+  'sist. info. contable iii': 'sistemas de informacion contable iii',
+  'teoria y gest. org.': 'teoria y gestion organizacional',
+  'teoria gest. org.': 'teoria y gestion organizacional ii',
+  'sociol. de las org.': 'sociologia de las organizaciones',
+  'metodologia de la inv.': 'metodologia de la investigacion',
+  'economia i': 'economia',
+  'fisico-quimica': 'fisico-quimica',
+  'fco-quimica': 'fisico-quimica',
+  // Formación Técnica Específica
+  'com. y com. orga.': 'comunicacion y comunicacion organizacional',
+  'prog. cpras. y  ventas': 'programacion de compras y ventas',
+  'prog. cpras. y ventas': 'programacion de compras y ventas',
+  'legua extr. ingles': 'lengua extranjera ingles',
+  'gest. cpras y ventas': 'gestion de compras y ventas',
+  'adm. y gest. rrhh': 'administracion y gestion de rrhh',
+  'gest. de clientes': 'gestion de clientes',
+  'oper de ing. y egr.': 'operaciones de ingresos y egresos',
+  'oper.cpras y vtas.': 'operaciones de compras y ventas',
+  'teor. y pract. imp.': 'teoria y practica impositiva i',
+  'teoria y pract. impositiva ii': 'teoria y practica impositiva ii',
+  'gest. finac. y fuente de finaciacion': 'gestion financiera y fuentes de financiamiento',
+  'liqui. y resi de las remu.': 'liquidacion y registro de remuneraciones',
+  'proyectos y gest. de micro': 'proyectos y gestion de microemprendimientos',
+  'proy. de la inv. y integ. sociocom.': 'proyecto de investigacion e integracion sociocomunitaria',
+  'proy. de inv. e interv. socio comun.': 'proyecto de investigacion e intervencion sociocomunitaria',
+  'hist. de las trans.soc. en los s. xx y xxi': 'historia de las transformaciones sociales del s. xx y xxi',
+  'trans. cient. del s. xx y xxi': 'transformaciones cientificas del s. xx y xxi',
+  'edi leng. extr. portugues': 'edi - lengua extranjera portugues',
+  'e.d.i.(2) portugues': 'edi - portugues',
+  'e.d.i.(3) matematica aplic.': 'edi - matematica aplicada',
+  'contabilidad aplic': 'contabilidad aplicada',
+  'edi': 'espacio de definicion institucional (edi)',
+}
+
 function normalizeSubjectName(name: string): string {
   return name
     .toLowerCase()
@@ -102,6 +195,11 @@ function normalizeSubjectName(name: string): string {
     .replace(/[̀-ͯ]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function resolveSubjectName(rawName: string): string {
+  const normalized = normalizeSubjectName(rawName)
+  return SUBJECT_ALIASES[normalized] ?? normalized
 }
 
 async function getOrCreateIds() {
@@ -127,6 +225,8 @@ async function importFile(
     file: fileConfig.file,
     studentsImported: 0,
     studentsSkipped: 0,
+    teachersImported: 0,
+    assignmentsImported: 0,
     errors: [],
     warnings: [],
   }
@@ -235,9 +335,81 @@ async function importFile(
     }
   }
 
-  // 3. Check for grade data in subject sheets
-  const subjectSheets = extractSubjectsFromFile(wb)
-  result.warnings.push(`${subjectSheets.length} materias detectadas: ${subjectSheets.join(', ')}`)
+  // 3. Import teachers and assignments from MATRIZ teacher table
+  const teacherAssignments = extractTeacherAssignments(matrizSheet)
+
+  for (const ta of teacherAssignments) {
+    // Split multiple teachers (e.g. "Nuñez Cergio/Vera Sabrina")
+    const teacherNames = ta.teacherName.split(/[/,]/).map(n => n.trim()).filter(Boolean)
+    const emails = ta.email.split(/[,;]/).map(e => e.trim()).filter(Boolean)
+
+    for (let i = 0; i < teacherNames.length; i++) {
+      const teacherName = teacherNames[i]
+      const email = emails[i] || emails[0] || null
+
+      // Upsert teacher by full_name
+      const { data: existingTeacher } = await supabase
+        .from('teachers')
+        .select('id')
+        .eq('full_name', teacherName)
+        .single()
+
+      let teacherId: string
+      if (existingTeacher) {
+        teacherId = existingTeacher.id
+      } else {
+        // DNI temporal basado en email o nombre normalizado (se actualiza con planta funcional)
+        const tempDni = email
+          ? `TMP-${email.split('@')[0].slice(0, 20)}`
+          : `TMP-${normalizeSubjectName(teacherName).replace(/\s/g, '-').slice(0, 20)}`
+
+        const { data: newTeacher, error } = await supabase
+          .from('teachers')
+          .upsert(
+            { full_name: teacherName, email, dni: tempDni, status: 'active', import_source: fileConfig.file },
+            { onConflict: 'dni' }
+          )
+          .select('id')
+          .single()
+
+        if (error) {
+          result.errors.push(`Error insertando docente ${teacherName}: ${error.message}`)
+          continue
+        }
+        teacherId = newTeacher!.id
+        result.teachersImported++
+      }
+
+      // Find subject by normalized name and year level
+      const resolvedName = resolveSubjectName(ta.subjectName)
+      const subject = ids.subjects.find(s => {
+        const sNorm = normalizeSubjectName(s.normalized_name || '')
+        return sNorm === resolvedName
+      })
+
+      if (!subject) {
+        result.warnings.push(`Materia no encontrada en DB: "${ta.subjectName}"`)
+        continue
+      }
+
+      // Upsert teacher assignment
+      const { error: assignError } = await supabase
+        .from('teacher_assignments')
+        .upsert({
+          teacher_id: teacherId,
+          subject_id: subject.id,
+          course_section_id: sectionId,
+          academic_year_id: ids.currentYearId,
+          is_active: true,
+        }, { onConflict: 'teacher_id,subject_id,course_section_id,academic_year_id' })
+
+      if (assignError) {
+        result.warnings.push(`Error asignando ${teacherName} a ${ta.subjectName}: ${assignError.message}`)
+      } else {
+        result.assignmentsImported++
+      }
+    }
+  }
 
   return result
 }
@@ -267,6 +439,8 @@ async function main() {
 
     let totalImported = 0
     let totalSkipped = 0
+    let totalTeachers = 0
+    let totalAssignments = 0
     const allErrors: string[] = []
 
     console.log(`\nProcesando ${VALID_FILES.length} archivos...`)
@@ -286,6 +460,8 @@ async function main() {
 
       totalImported += result.studentsImported
       totalSkipped += result.studentsSkipped
+      totalTeachers += result.teachersImported
+      totalAssignments += result.assignmentsImported
 
       if (result.warnings.length > 0) {
         result.warnings.forEach(w => console.log(`     ⚠ ${w}`))
@@ -315,6 +491,8 @@ async function main() {
     console.log('\n=== RESUMEN ===')
     console.log(`Alumnos nuevos importados: ${totalImported}`)
     console.log(`Alumnos ya existentes (omitidos): ${totalSkipped}`)
+    console.log(`Docentes nuevos importados: ${totalTeachers}`)
+    console.log(`Asignaciones importadas: ${totalAssignments}`)
     console.log(`Errores: ${allErrors.length}`)
 
     if (allErrors.length > 0) {
