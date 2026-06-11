@@ -11,12 +11,14 @@ import * as path from 'path'
 import * as XLSX from 'xlsx'
 import { createClient } from '@supabase/supabase-js'
 import * as dotenv from 'dotenv'
+import ws from 'ws'
 
 dotenv.config({ path: '.env.local' })
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { realtime: { transport: ws } }
 )
 
 const INSUMOS_DIR = path.join(process.cwd(), 'insumos', 'planillas')
@@ -252,7 +254,7 @@ async function main() {
       import_type: 'students_and_sections',
       status: 'processing',
       total_rows: VALID_FILES.length,
-      created_by: (await supabase.auth.getUser()).data.user?.id ?? '00000000-0000-0000-0000-000000000000',
+      created_by: '481ccd5d-63d6-41a5-98ce-eadfa8a04a2c',
     })
     .select('id')
     .single()
